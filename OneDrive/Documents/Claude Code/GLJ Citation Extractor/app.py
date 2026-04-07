@@ -27,6 +27,20 @@ st.divider()
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header('Options')
+
+    st.subheader('AI-assisted extraction')
+    api_key = st.text_input(
+        'Anthropic API key (optional)',
+        type='password',
+        help='Provide a key to use Claude for more accurate prose/citation '
+             'separation. Leave blank to use the built-in regex heuristics.',
+    )
+    if api_key:
+        st.success('AI mode enabled — Claude will strip prose from footnotes.')
+    else:
+        st.info('Using regex heuristics. Add an API key for better accuracy.')
+
+    st.divider()
     show_raw = st.checkbox('Show raw footnote text in preview', value=False)
     show_review_only = st.checkbox('Preview "Needs Review" rows only', value=False)
     st.divider()
@@ -58,12 +72,34 @@ if uploaded is None:
 # ---------------------------------------------------------------------------
 # Run extraction
 # ---------------------------------------------------------------------------
+anthropic_client = None
+if api_key:
+    try:
+        import anthropic
+        anthropic_client = anthropic.Anthropic(api_key=api_key)
+    except ImportError:
+        st.warning('`anthropic` package not installed. Falling back to regex mode.')
+
+progress_bar = st.progress(0, text='Extracting citations…')
+
+def on_progress(done: int, total: int):
+    pct = done / total if total else 1.0
+    label = f'Processing footnotes… {done}/{total}'
+    progress_bar.progress(pct, text=label)
+
 with st.spinner('Extracting and cleaning citations…'):
     try:
-        df = extract_citations(uploaded.read(), uploaded.name)
+        df = extract_citations(
+            uploaded.read(),
+            uploaded.name,
+            anthropic_client=anthropic_client,
+            on_progress=on_progress,
+        )
     except Exception as e:
         st.error(f'Extraction failed: {e}')
         st.stop()
+
+progress_bar.empty()
 
 if df.empty:
     st.warning(
