@@ -64,13 +64,15 @@ with st.sidebar:
         '- `infra note X` references\n'
         '- Bare pincites (`at X`)\n\n'
         '**id. citations** are tracked and counted toward their prior source.\n\n'
+        '**Supra note X** and **Infra note X** citations are resolved to '
+        'the source cited in footnote X and counted toward it.\n\n'
         '**Flagged for review** (appear on Needs Review sheet):\n'
         '- Citations containing *quoting* or *citing*\n'
         '- *Forthcoming* / *on-file* sources\n'
         '- `Compare...with...` double citations\n'
         '- Possible short case cites\n'
         '- AI fallback used (rule-based applied when AI returned no result)\n'
-        '- Unresolved *id.* citations\n\n'
+        '- Unresolved *id.*, *supra*, or *infra* citations\n\n'
         '**Sources are consolidated** by base citation — '
         'different pincites of the same source count as one unique source.'
     )
@@ -146,8 +148,8 @@ col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric('Footnotes found',      total_fn)
 col2.metric('Individual citations', total_cit)
 col3.metric('Unique sources',       unique_src)
-col4.metric('id. citations tracked', id_count,
-            help='id. citations are counted toward the source they resolve to')
+col4.metric('Short cites tracked', id_count,
+            help='id., supra note, and infra note citations resolved to their source and counted toward it')
 col5.metric('Need review',          needs_rev,
             delta=f'{needs_rev/max(total_cit,1)*100:.0f}%',
             delta_color='inverse')

@@ -198,6 +198,9 @@ def _looks_like_citation(text: str) -> bool:
     t = text.strip()
 
     # ---- Hard exclusions first ----------------------------------------
+    # Supra/infra note references — resolved separately from raw text
+    if re.search(r'\bsupra\s+note\s+\d+|\binfra\s+note\s+\d+', t, re.IGNORECASE):
+        return False
     if t.startswith(('"', '\u201c', '\u2018', "'")):
         return False
     if t and t[0].islower():
@@ -379,8 +382,6 @@ def _truncate_trailing_prose(text: str) -> str:
 _STANDALONE_SHORT_CITE = re.compile(
     r'^\s*('
     r'(see\s+)?id\.?(\s+at\s+[\w,\s\u2013\u2014\-\.]+)?'
-    r'|(see\s+)?supra\b[^;]*'
-    r'|(see\s+)?infra\b[^;]*'
     r'|at\s+\d+[\d,\s\u2013\-]*'
     r')\s*[.,]?\s*$',
     re.IGNORECASE,
@@ -388,15 +389,56 @@ _STANDALONE_SHORT_CITE = re.compile(
 
 _ID_CITE = re.compile(r'^\s*(see\s+)?id\.?(\s+at\s+[\w,\s\u2013\u2014\-\.]+)?\s*[.,]?\s*$', re.IGNORECASE)
 
+# Supra/infra note references — detected from raw text and resolved to their source
+_SUPRA_NOTE_RE = re.compile(r'supra\s+note\s+(\d+)', re.IGNORECASE)
+_INFRA_NOTE_RE = re.compile(r'infra\s+note\s+(\d+)', re.IGNORECASE)
+
 
 def is_short_cite(text: str) -> bool:
-    """Return True if the segment is entirely a short-cite (id./supra/infra/bare pincite)."""
+    """Return True if the segment is entirely an id. short-cite or bare pincite."""
     return bool(_STANDALONE_SHORT_CITE.match(text.strip()))
 
 
 def is_id_cite(text: str) -> bool:
-    """Return True if the segment is specifically an id. short-cite (not supra/infra)."""
+    """Return True if the segment is specifically an id. short-cite."""
     return bool(_ID_CITE.match(text.strip()))
+
+
+def _find_supra_infra(raw_text: str) -> list[tuple[str, int]]:
+    """
+    Find all supra/infra note references in a footnote's raw text.
+    Returns a deduplicated list of (cite_type, note_num) tuples,
+    where cite_type is 'supra' or 'infra'.
+    """
+    results: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for pattern, cite_type in ((_SUPRA_NOTE_RE, 'supra'), (_INFRA_NOTE_RE, 'infra')):
+        for m in pattern.finditer(raw_text):
+            note_num = int(m.group(1))
+            key = (cite_type, note_num)
+            if key not in seen:
+                seen.add(key)
+                results.append((cite_type, note_num))
+    return results
+
+
+def _resolve_cross_ref(
+    canonicals: list[str],
+    cite_type: str,
+    note_num: int,
+) -> tuple[str, str]:
+    """
+    Resolve a supra/infra reference to a canonical citation.
+    Returns (canonical_citation, review_reason).
+    """
+    label = f'{cite_type} note {note_num}'
+    if not canonicals:
+        return '', f'Unresolved {label} — referenced footnote has no extracted citations'
+    if len(canonicals) == 1:
+        return canonicals[0], ''
+    return canonicals[0], (
+        f'{label} references a footnote with multiple citations; resolved to first — verify'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -552,10 +594,12 @@ def extract_citations(
         if on_progress:
             on_progress(len(raw_footnotes), len(raw_footnotes))
 
-    # ---- Steps 3-8: clean citations, track id. references ---------------
+    # ---- Steps 3-8: clean citations, track id./supra/infra references ------
     raw_lookup = {fn_num: text for fn_num, text in raw_footnotes}
     records = []
     last_canonical: str | None = None  # most recent resolved canonical, for id. resolution
+    fn_canonicals: dict[int, list[str]] = {}  # {fn_num: [canonical_citations]}
+    deferred_infra: list[dict] = []           # infra rows pending post-loop resolution
 
     for fn_num in sorted(citation_strings.keys()):
         cit_list = citation_strings[fn_num]
@@ -588,6 +632,35 @@ def extract_citations(
                     'extraction_method':  method,
                 })
 
+        # --- Detect supra / infra note references from raw text ---
+        # Supra resolves immediately (prior footnote data is available).
+        # Infra is deferred until all footnotes have been processed.
+        fn_canonicals.setdefault(fn_num, [])
+        for cite_type, note_num in _find_supra_infra(raw_text):
+            cite_text = f'{cite_type} note {note_num}'
+            if cite_type == 'supra':
+                canonicals = fn_canonicals.get(note_num, [])
+                canon, reason = _resolve_cross_ref(canonicals, cite_type, note_num)
+                records.append({
+                    'footnote_num':       fn_num,
+                    'raw_citation':       raw_text,
+                    'citation':           cite_text,
+                    'canonical_citation': canon,
+                    'is_id_cite':         True,
+                    'needs_review':       bool(reason),
+                    'review_reason':      reason,
+                    'extraction_method':  method,
+                })
+            else:  # infra — referenced footnote not yet processed
+                deferred_infra.append({
+                    'footnote_num':       fn_num,
+                    'raw_citation':       raw_text,
+                    'citation':           cite_text,
+                    'is_id_cite':         True,
+                    'extraction_method':  method,
+                    '_infra_note':        note_num,
+                })
+
         # --- Process real citations from prose-stripped cit_list ---
         for raw_cit in cit_list:
             # Column C: remove long parentheticals
@@ -600,9 +673,11 @@ def extract_citations(
             parts = [p.strip() for p in step_d.split(';') if p.strip()]
 
             for part in parts:
-                # supra / infra / bare pincite: drop entirely
-                # (id. was already handled above from raw text)
+                # id. / bare pincite: drop (id. was handled above from raw text)
                 if is_short_cite(part):
+                    continue
+                # supra/infra: handled above from raw text — skip here to avoid duplication
+                if _SUPRA_NOTE_RE.search(part) or _INFRA_NOTE_RE.search(part):
                     continue
 
                 if is_likely_noise(part):
@@ -610,6 +685,7 @@ def extract_citations(
 
                 # Strip pincite to get canonical source form
                 canonical = _strip_pincite(part)
+                fn_canonicals[fn_num].append(canonical)
                 reason = needs_review_reason(part)
 
                 # Flag when AI mode was active but regex had to be used for this footnote
@@ -629,6 +705,16 @@ def extract_citations(
                 })
                 # Update last known source for subsequent id. resolution
                 last_canonical = canonical
+
+    # --- Resolve deferred infra citations ---
+    for record in deferred_infra:
+        note_num = record.pop('_infra_note')
+        canonicals = fn_canonicals.get(note_num, [])
+        canon, reason = _resolve_cross_ref(canonicals, 'infra', note_num)
+        record['canonical_citation'] = canon
+        record['needs_review'] = bool(reason)
+        record['review_reason'] = reason
+        records.append(record)
 
     df = pd.DataFrame(records)
     if df.empty:
