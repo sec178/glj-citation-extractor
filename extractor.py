@@ -30,19 +30,30 @@ _W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 # ---------------------------------------------------------------------------
 
 def extract_footnotes_docx(file_bytes: bytes) -> list[tuple[int, str]]:
-    """Return [(footnote_number, text), ...] from a .docx file."""
-    from docx import Document
+    """
+    Return [(footnote_number, text), ...] from a .docx file.
 
-    doc = Document(io.BytesIO(file_bytes))
-    footnotes = []
+    Reads footnotes.xml directly from the zip rather than going through the
+    python-docx API, which does not expose a .footnotes attribute in all versions.
+    """
+    import zipfile
+    from xml.etree import ElementTree as ET
 
     try:
-        fn_part = doc.part.footnotes
-        fn_xml = fn_part._element
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+            if 'word/footnotes.xml' not in z.namelist():
+                return []
+            xml_bytes = z.read('word/footnotes.xml')
     except Exception:
         return []
 
-    for fn_elem in fn_xml.findall(f'.//{{{_W}}}footnote'):
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return []
+
+    footnotes = []
+    for fn_elem in root.findall(f'.//{{{_W}}}footnote'):
         fn_id_str = fn_elem.get(f'{{{_W}}}id', '')
         try:
             fn_id = int(fn_id_str)
