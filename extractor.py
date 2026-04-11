@@ -252,30 +252,67 @@ def _looks_like_citation(text: str) -> bool:
     return False
 
 
-# Matches a citation boundary: a closing paren or digit, followed by ". Signal"
-# Used to split "Smith (2007). See also Doe (2008)" into two citations.
+# Split on ". Signal" after any word character or closing paren.
+# Broader than before (was (?<=[)\d])) so "granted. See also" now splits.
+# False-split risk is low because the lookahead is very specific signal words.
 _SIGNAL_SEP_RE = re.compile(
-    r'(?<=[)\d])\s*\.\s+'
+    r'(?<=[)\w])\s*\.\s+'
     r'(?=See,?\s*e\.g\.|See\s+also|But\s+[Ss]ee|See\s+generally'
     r'|[Ss]ee\s+|Cf\.,?\s|Compare\s|E\.g\.,|generally\s)',
     re.IGNORECASE,
 )
+
+# Split on ". [citation start]" — catches citations separated by prose sentences.
+# Requires the text after the period to unambiguously open a new citation:
+#   \d+\s+[A-Z]          → volume + reporter  e.g. "467 U.S.", "100 F.3d"
+#   [A-Z][a-z]+…v\.\s+[A-Z]  → case name      e.g. "Loper Bright v. R"
+# Parenthetical content is hidden before this regex runs so abbreviations
+# inside (D.C. Cir. 2007) are never accidentally split.
+_CITE_START_RE = re.compile(
+    r'(?<=\w{2})\.\s+'
+    r'(?=\d+\s+[A-Z]'
+    r'|[A-Z][a-z]+(?:\s+[A-Z][a-z\']+)*\s+v\.\s+[A-Z])',
+)
+
+# Matches a single level of parentheses (used to protect paren content)
+_PAREN_PROTECT_RE = re.compile(r'\(([^()]*)\)')
 
 
 def _split_footnote(text: str) -> list[str]:
     """
     Split a raw footnote into individual citation segments.
 
-    Handles two separator patterns:
-      1. Semicolons  (the primary delimiter in Bluebook style)
-      2. ". Signal"  (e.g. ". See also", ". But see", ". Cf.")
-         — only fires when the preceding character is ) or a digit,
-           so abbreviations like "U.S." and "F.3d" are not split.
+    Three separator passes (in order):
+      1. Semicolons
+      2. ". Signal"  — ". See also", ". But see", ". Cf." etc.
+      3. ". [volume Reporter]" or ". [Case v. Case]"  — plain sentence
+         boundary before an unambiguous new citation.
+
+    Parenthetical content is hidden during pass 3 so abbreviations
+    inside year/court parens (e.g. "D.C. Cir.") are never split.
     """
-    parts = []
-    for chunk in text.split(';'):
-        parts.extend(_SIGNAL_SEP_RE.split(chunk))
-    return [p.strip() for p in parts if p.strip()]
+    # --- protect parenthetical content from _CITE_START_RE ---
+    stash: list[str] = []
+
+    def _hide(m: re.Match) -> str:
+        idx = len(stash)
+        stash.append(m.group(0))
+        return f'Z{idx:04d}Z'          # all word chars → safe for lookbehinds
+
+    def _restore(s: str) -> str:
+        for i, v in enumerate(stash):
+            s = s.replace(f'Z{i:04d}Z', v)
+        return s
+
+    protected = _PAREN_PROTECT_RE.sub(_hide, text)
+
+    parts: list[str] = []
+    for chunk in protected.split(';'):
+        for sub in _SIGNAL_SEP_RE.split(chunk):
+            for seg in _CITE_START_RE.split(sub):
+                parts.append(_restore(seg.strip()))
+
+    return [p for p in parts if p.strip()]
 
 
 def _regex_strip_prose(text: str) -> list[str]:
@@ -292,11 +329,16 @@ def _regex_strip_prose(text: str) -> list[str]:
     for part in parts:
         seg = clean_parentheticals(part)
         seg = clean_signals(seg).strip()
+        seg = _truncate_trailing_prose(seg)
         if _ID_CITE.match(seg):
             continue
         if len(seg) < 10:
             continue
-        if _looks_like_citation(seg):
+        # Bypass the prose-word filter when two or more strong citation
+        # signals are present (multiple case names or year parentheticals).
+        case_count = len(re.findall(r'\bv\.\s+[A-Z]', seg))
+        year_count = len(re.findall(r'\(\d{4}', seg))
+        if case_count >= 2 or year_count >= 2 or _looks_like_citation(seg):
             results.append(seg)
     if results:
         return results
