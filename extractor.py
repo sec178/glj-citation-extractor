@@ -664,6 +664,14 @@ def extract_citations(
     if on_progress:
         on_progress(len(raw_footnotes), len(raw_footnotes))
 
+    # ---- Fallback: if nothing was extracted, use the cleaned full footnote ----
+    for fn_num, text in raw_footnotes:
+        if not citation_strings.get(fn_num):
+            cleaned = clean_signals(clean_parentheticals(strip_footnote_number(text))).strip()
+            if cleaned:
+                citation_strings[fn_num] = [cleaned]
+                fn_methods[fn_num] = 'raw_fallback'
+
     # ---- Steps 3-8: clean citations, track id./supra/infra references ------
     raw_lookup = {fn_num: text for fn_num, text in raw_footnotes}
     records = []
