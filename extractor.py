@@ -17,7 +17,6 @@ Pipeline:
 import json
 import re
 import io
-from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
@@ -255,15 +254,31 @@ def _looks_like_citation(text: str) -> bool:
 
 def _regex_strip_prose(text: str) -> list[str]:
     """
-    Split a footnote on semicolons only (the primary delimiter per the
-    source-collect template), then return only citation-like segments.
+    Clean and split a footnote into individual citation strings.
+
+    Improvement over the original: cleaning (footnote-number stripping,
+    parenthetical removal, signal stripping) happens *before* the
+    citation-detection heuristic runs, so _looks_like_citation sees
+    clean text rather than signal-laden prose.
     """
+    text = strip_footnote_number(text)
     parts = [p.strip() for p in text.split(';') if p.strip()]
-    citations = [p for p in parts if _looks_like_citation(p)]
-    if citations:
-        return citations
-    if _looks_like_citation(text.strip()):
-        return [text.strip()]
+    results = []
+    for part in parts:
+        seg = clean_parentheticals(part)
+        seg = clean_signals(seg).strip()
+        if _ID_CITE.match(seg):
+            continue
+        if len(seg) < 10:
+            continue
+        if _looks_like_citation(seg):
+            results.append(seg)
+    if results:
+        return results
+    # Fallback: treat the whole footnote as one citation
+    whole = clean_signals(clean_parentheticals(text)).strip()
+    if len(whole) >= 10 and not _ID_CITE.match(whole) and _looks_like_citation(whole):
+        return [whole]
     return []
 
 
@@ -271,20 +286,29 @@ def _regex_strip_prose(text: str) -> list[str]:
 # Step 3: Clean parentheticals  (column C — Cleaning and Formatting tab)
 # ---------------------------------------------------------------------------
 
-_PAREN_RE = re.compile(r'\([^)#@~]{20,}\)')
+_PAREN_KEEP = ['quoting', 'citing', 'West, Westlaw']
+_PAREN_THRESHOLD = 20
 
 
 def clean_parentheticals(text: str) -> str:
-    """Remove long parentheticals (20+ chars) unless they contain quoting/citing/Westlaw."""
-    text = (text
-            .replace('quoting', '\x00Q\x00')
-            .replace('citing',  '\x00C\x00')
-            .replace('West, Westlaw', '\x00W\x00'))
-    text = _PAREN_RE.sub('', text)
-    return (text
-            .replace('\x00Q\x00', 'quoting')
-            .replace('\x00W\x00', 'West, Westlaw')
-            .replace('\x00C\x00', 'citing'))
+    """
+    Remove parentheticals longer than 20 chars unless they contain
+    quoting / citing / West, Westlaw.  Uses a replacer function so no
+    placeholder characters are needed.
+    """
+    if not isinstance(text, str):
+        return text
+
+    def _replacer(m):
+        content = m.group(1)
+        if len(content) >= _PAREN_THRESHOLD:
+            if any(k.lower() in content.lower() for k in _PAREN_KEEP):
+                return m.group(0)
+            return ''
+        return m.group(0)
+
+    cleaned = re.sub(r'\(([^()]*)\)', _replacer, text)
+    return re.sub(r' {2,}', ' ', cleaned).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -292,21 +316,27 @@ def clean_parentheticals(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 _SIGNALS = [
-    '[1]',
+    # More-specific variants must precede shorter overlapping ones
     'See, e.g., ',
     'see, e.g., ',
+    'See, e.g.',
+    'see, e.g.',
     'See also ',
     'see also ',
+    'But See ',
     'But see ',
     'but see ',
     'See generally ',
     'see generally ',
-    'See ',
-    'generally ',
-    'Cf. ',
-    'cf. ',
+    'Compare ',
+    'compare ',
     'E.g., ',
     'e.g., ',
+    'Cf., ',
+    'Cf. ',
+    'cf. ',
+    'generally ',
+    'See ',
     'see ',
 ]
 
@@ -316,9 +346,22 @@ def clean_signals(text: str) -> str:
     Strip leading legal citation signals and normalise whitespace.
     Matches the Cleaning and Formatting tab column D formula.
     """
+    if not isinstance(text, str):
+        return text
     for sig in _SIGNALS:
         text = text.replace(sig, '')
     return re.sub(r'\s+', ' ', text).strip()
+
+
+def strip_footnote_number(text: str) -> str:
+    """
+    Remove a leading footnote number marker if present.
+    Handles formats like: "30. ", "30) ", "30.\t"
+    Does NOT strip numbers that are part of a citation (e.g., "18 U.S.C. § 922").
+    """
+    if not isinstance(text, str):
+        return text
+    return re.sub(r'^\d{1,4}[\.\)]\s+', '', text).strip()
 
 
 def _balance_parens(text: str) -> str:
@@ -767,129 +810,45 @@ def extract_citations(
 # ---------------------------------------------------------------------------
 
 def build_excel(df: pd.DataFrame, metadata: dict | None = None) -> bytes:
+    """
+    Export a single-sheet alphabetical list of unique cleaned citations.
+    """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
 
-    if metadata is None:
-        metadata = {}
-
-    total_footnotes = metadata.get('total_footnotes', int(df['footnote_num'].nunique()))
-
-    wb = Workbook()
+    real_df = df[~df['is_id_cite']]
+    sources = sorted(
+        real_df['canonical_citation'].dropna().unique(),
+        key=lambda x: x.lower(),
+    )
 
     HEADER_BG = 'C00000'
-    HEADER_FG = 'FFFFFF'
-    REVIEW_BG = 'FFF2CC'
-    ALT_BG    = 'F2F2F2'
-    FONT_NAME = 'Arial'
+    FONT_NAME  = 'Arial'
+    ALT_BG     = 'F2F2F2'
     thin   = Side(border_style='thin', color='BFBFBF')
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    def hdr(ws, row, col, value, width=None):
-        c = ws.cell(row=row, column=col, value=value)
-        c.font      = Font(name=FONT_NAME, bold=True, color=HEADER_FG, size=10)
-        c.fill      = PatternFill('solid', fgColor=HEADER_BG)
-        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        c.border    = border
-        if width:
-            ws.column_dimensions[get_column_letter(col)].width = width
-
-    def dat(ws, row, col, value, bg=None, bold=False):
-        c = ws.cell(row=row, column=col, value=value)
-        c.font      = Font(name=FONT_NAME, size=10, bold=bold)
-        c.alignment = Alignment(vertical='top', wrap_text=True)
-        c.border    = border
-        if bg:
-            c.fill  = PatternFill('solid', fgColor=bg)
-
-    # ------------------------------------------------------------------
-    # Build unique-source aggregates
-    #   - real citations (is_id_cite=False) contribute their canonical form
-    #   - id. citations (is_id_cite=True, canonical != '') count toward the
-    #     source they resolved to
-    # ------------------------------------------------------------------
-    real_df   = df[~df['is_id_cite']]
-    id_df     = df[df['is_id_cite'] & (df['canonical_citation'].str.len() > 0)]
-
-    source_data: dict[str, dict] = defaultdict(lambda: {'count': 0, 'footnotes': set()})
-
-    for _, row in real_df.iterrows():
-        canon = row['canonical_citation']
-        if canon:
-            source_data[canon]['count'] += 1
-            source_data[canon]['footnotes'].add(int(row['footnote_num']))
-
-    for _, row in id_df.iterrows():
-        canon = row['canonical_citation']
-        source_data[canon]['count'] += 1
-        source_data[canon]['footnotes'].add(int(row['footnote_num']))
-
-    sorted_sources = sorted(source_data.items(), key=lambda x: x[0].lower())
-
-    # ------------------------------------------------------------------
-    # Sheet 1: Unique Sources
-    # ------------------------------------------------------------------
+    wb = Workbook()
     ws = wb.active
-    ws.title = 'Unique Sources'
+    ws.title = 'Sources'
     ws.freeze_panes = 'A2'
     ws.row_dimensions[1].height = 20
+    ws.column_dimensions['A'].width = 90
 
-    hdr(ws, 1, 1, 'Citation',             90)
-    hdr(ws, 1, 2, 'Times Cited',          13)
-    hdr(ws, 1, 3, 'Cited in Footnote(s)', 30)
+    h = ws.cell(row=1, column=1, value='Citation')
+    h.font      = Font(name=FONT_NAME, bold=True, color='FFFFFF', size=10)
+    h.fill      = PatternFill('solid', fgColor=HEADER_BG)
+    h.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    h.border    = border
 
-    for i, (canon, info) in enumerate(sorted_sources):
+    for i, citation in enumerate(sources):
         r  = i + 2
-        bg = ALT_BG if i % 2 == 0 else None
-        fn_list = ', '.join(str(fn) for fn in sorted(info['footnotes']))
-        dat(ws, r, 1, canon,          bg)
-        dat(ws, r, 2, info['count'],  bg)
-        dat(ws, r, 3, fn_list,        bg)
-
-    # ------------------------------------------------------------------
-    # Sheet 2: Summary
-    # ------------------------------------------------------------------
-    ws2 = wb.create_sheet('Summary')
-    ws2.column_dimensions['A'].width = 35
-    ws2.column_dimensions['B'].width = 15
-    ws2.row_dimensions[1].height = 20
-
-    hdr(ws2, 1, 1, 'Metric')
-    hdr(ws2, 1, 2, 'Count')
-
-    total_individual = len(real_df)  # non-id. citation rows = individual citations extracted
-
-    summary_rows = [
-        ('Total footnotes processed',   total_footnotes),
-        ('Total individual citations',  total_individual),
-    ]
-    for r, (label, val) in enumerate(summary_rows, start=2):
-        dat(ws2, r, 1, label)
-        dat(ws2, r, 2, val)
-
-    # ------------------------------------------------------------------
-    # Sheet 3: Needs Review
-    #   Includes: flagged real citations + unresolved id. rows
-    # ------------------------------------------------------------------
-    ws3 = wb.create_sheet('Needs Review')
-    ws3.freeze_panes = 'A2'
-    ws3.row_dimensions[1].height = 20
-
-    rev_df = df[df['needs_review']].reset_index(drop=True)
-
-    hdr(ws3, 1, 1, 'Footnote #',        10)
-    hdr(ws3, 1, 2, 'Citation',           90)
-    hdr(ws3, 1, 3, 'Review Reason',      45)
-    hdr(ws3, 1, 4, 'Raw Footnote Text',  70)
-
-    for i, row in rev_df.iterrows():
-        r  = i + 2
-        bg = REVIEW_BG if i % 2 == 0 else 'FEE9AA'
-        dat(ws3, r, 1, int(row['footnote_num']),  bg)
-        dat(ws3, r, 2, row['citation'],            bg)
-        dat(ws3, r, 3, row['review_reason'],       bg)
-        dat(ws3, r, 4, row['raw_citation'],        bg)
+        c  = ws.cell(row=r, column=1, value=citation)
+        c.font      = Font(name=FONT_NAME, size=10)
+        c.alignment = Alignment(vertical='top', wrap_text=True)
+        c.border    = border
+        if i % 2 == 0:
+            c.fill = PatternFill('solid', fgColor=ALT_BG)
 
     buf = io.BytesIO()
     wb.save(buf)

@@ -62,27 +62,15 @@ with st.sidebar:
         )
 
     st.divider()
-    show_raw = st.checkbox('Show raw footnote text in preview', value=False)
-    show_review_only = st.checkbox('Preview "Needs Review" rows only', value=False)
-    st.divider()
     st.markdown(
-        '**Excluded automatically** (never appear in output):\n'
-        '- `supra note X` references\n'
-        '- `infra note X` references\n'
-        '- Bare pincites (`at X`)\n\n'
-        '**id. citations** are tracked and counted toward their prior source.\n\n'
-        '**Supra note X** and **Infra note X** citations are resolved to '
-        'the source cited in footnote X and counted toward it.\n\n'
-        '**Flagged for review** (appear on Needs Review sheet):\n'
-        '- Citations containing *quoting* or *citing*\n'
-        '- *Forthcoming* / *on-file* sources\n'
-        '- `Compare...with...` double citations\n'
-        '- Possible short case cites\n'
-        '- AI Assist used (regex found nothing; Claude extracted the citations)\n'
-        '- AI safety net used (AI Only mode; Claude returned nothing; regex applied)\n'
-        '- Unresolved *id.*, *supra*, or *infra* citations\n\n'
-        '**Sources are consolidated** by base citation — '
-        'different pincites of the same source count as one unique source.'
+        '**Excluded from output:**\n'
+        '- `id.` / `id. at X` short-cites\n'
+        '- `supra note X` / `infra note X` references\n'
+        '- Bare pincites (`at X`)\n'
+        '- Citation signals (`See`, `Cf.`, `Compare`, etc.)\n'
+        '- Long parentheticals (20+ chars), unless they contain *quoting* or *citing*\n\n'
+        '**Sources are deduplicated** by base citation — '
+        'different pincites of the same source appear once.'
     )
 
 # ---------------------------------------------------------------------------
@@ -149,52 +137,25 @@ if df.empty:
 # ---------------------------------------------------------------------------
 total_fn   = metadata.get('total_footnotes', int(df['footnote_num'].nunique()))
 real_df    = df[~df['is_id_cite']]
-id_df      = df[df['is_id_cite']]
-total_cit  = len(real_df)
-needs_rev  = int(df['needs_review'].sum())
 unique_src = int(real_df['canonical_citation'].nunique())
-id_count   = len(id_df)
 
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric('Footnotes found',      total_fn)
-col2.metric('Individual citations', total_cit)
-col3.metric('Unique sources',       unique_src)
-col4.metric('Short cites tracked', id_count,
-            help='id., supra note, and infra note citations resolved to their source and counted toward it')
-col5.metric('Need review',          needs_rev,
-            delta=f'{needs_rev/max(total_cit,1)*100:.0f}%',
-            delta_color='inverse')
+col1, col2 = st.columns(2)
+col1.metric('Footnotes processed', total_fn)
+col2.metric('Unique sources found', unique_src)
 
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Preview table  (non-id. citations only)
+# Preview — alphabetical list of unique cleaned citations
 # ---------------------------------------------------------------------------
-preview_df = real_df.copy()
-if show_review_only:
-    preview_df = preview_df[preview_df['needs_review']]
+sources = sorted(
+    real_df['canonical_citation'].dropna().unique(),
+    key=str.lower,
+)
+preview_df = pd.DataFrame({'Citation': sources})
 
-display_cols = ['footnote_num', 'citation', 'needs_review', 'review_reason']
-if show_raw:
-    display_cols.append('raw_citation')
-
-preview_df = preview_df[display_cols].rename(columns={
-    'footnote_num':  'Footnote #',
-    'citation':      'Citation',
-    'needs_review':  'Needs Review',
-    'review_reason': 'Review Reason',
-    'raw_citation':  'Raw Footnote Text',
-})
-
-st.subheader(f'Preview — {len(preview_df):,} rows')
-
-def highlight_review(row):
-    if row.get('Needs Review'):
-        return ['background-color: #FFF2CC'] * len(row)
-    return [''] * len(row)
-
-styled = preview_df.style.apply(highlight_review, axis=1)
-st.dataframe(styled, use_container_width=True, height=420)
+st.subheader(f'Sources — {len(sources):,}')
+st.dataframe(preview_df, use_container_width=True, height=420)
 
 # ---------------------------------------------------------------------------
 # Download button
@@ -215,10 +176,6 @@ st.download_button(
 )
 
 st.caption(
-    'The workbook contains three sheets: '
-    '**Unique Sources** (all sources deduplicated and consolidated by base citation, '
-    'with times-cited count and footnote numbers — includes id. citations counted toward '
-    'the source they resolve to), '
-    '**Summary** (total footnotes processed and total individual citations), and '
-    '**Needs Review** (flagged rows with reason codes).'
+    'The workbook contains one sheet — **Sources** — with every unique cleaned citation '
+    'in alphabetical order, one per row.'
 )
