@@ -2,6 +2,7 @@
 GLJ Citation Extractor — Streamlit app entry point.
 """
 
+import pandas as pd
 import streamlit as st
 from extractor import extract_citations, build_excel
 
