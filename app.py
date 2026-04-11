@@ -29,28 +29,35 @@ with st.sidebar:
     st.header('Options')
 
     st.subheader('Extraction mode')
-    use_ai = st.toggle(
-        'Use AI (Claude)',
-        value=False,
-        help='When on, Claude strips prose from footnotes for higher accuracy. '
-             'When off, citations are parsed using the rule-based regex heuristics '
-             'that match the Cleaning and Formatting tab logic.',
+    mode = st.radio(
+        'Extraction mode',
+        options=['Standard', 'AI Assist', 'AI Only'],
+        label_visibility='collapsed',
+        help=(
+            '**Standard** — rule-based regex only; no API key required.\n\n'
+            '**AI Assist** — regex runs first; Claude handles footnotes regex cannot parse.\n\n'
+            '**AI Only** — Claude processes every footnote; regex is a safety net if Claude '
+            'returns nothing for a footnote.'
+        ),
     )
 
     api_key = ''
-    if use_ai:
+    if mode in ('AI Assist', 'AI Only'):
         api_key = st.text_input(
             'Anthropic API key',
             type='password',
-            help='Required for AI mode.',
+            help='Required for AI Assist and AI Only modes.',
         )
         if api_key:
-            st.success('AI mode enabled — Claude will strip prose from footnotes.')
+            if mode == 'AI Assist':
+                st.success('AI Assist enabled — Claude will handle footnotes regex cannot parse.')
+            else:
+                st.success('AI Only enabled — Claude will process every footnote.')
         else:
-            st.warning('Enter an Anthropic API key above to enable AI mode.')
+            st.warning('Enter an Anthropic API key above to activate this mode.')
     else:
         st.info(
-            'Rule-based mode — citations parsed using regex heuristics '
+            'Standard mode — citations parsed using the rule-based regex heuristics '
             '(Cleaning and Formatting tab logic).'
         )
 
@@ -71,7 +78,8 @@ with st.sidebar:
         '- *Forthcoming* / *on-file* sources\n'
         '- `Compare...with...` double citations\n'
         '- Possible short case cites\n'
-        '- AI fallback used (rule-based applied when AI returned no result)\n'
+        '- AI Assist used (regex found nothing; Claude extracted the citations)\n'
+        '- AI safety net used (AI Only mode; Claude returned nothing; regex applied)\n'
         '- Unresolved *id.*, *supra*, or *infra* citations\n\n'
         '**Sources are consolidated** by base citation — '
         'different pincites of the same source count as one unique source.'
@@ -95,12 +103,14 @@ if uploaded is None:
 # Run extraction
 # ---------------------------------------------------------------------------
 anthropic_client = None
-if use_ai and api_key:
+ai_primary = False
+if mode in ('AI Assist', 'AI Only') and api_key:
     try:
         import anthropic
         anthropic_client = anthropic.Anthropic(api_key=api_key)
+        ai_primary = (mode == 'AI Only')
     except ImportError:
-        st.warning('`anthropic` package not installed. Falling back to rule-based mode.')
+        st.warning('`anthropic` package not installed. Falling back to Standard mode.')
 
 progress_bar = st.progress(0, text='Extracting citations…')
 
@@ -115,6 +125,7 @@ with st.spinner('Extracting and cleaning citations…'):
             uploaded.read(),
             uploaded.name,
             anthropic_client=anthropic_client,
+            ai_primary=ai_primary,
             on_progress=on_progress,
         )
     except Exception as e:

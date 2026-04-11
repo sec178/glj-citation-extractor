@@ -523,6 +523,7 @@ def extract_citations(
     file_bytes: bytes,
     filename: str,
     anthropic_client=None,
+    ai_primary: bool = False,
     on_progress=None,
 ) -> tuple[pd.DataFrame, dict]:
     """
@@ -532,8 +533,14 @@ def extract_citations(
     ----------
     file_bytes        : raw bytes of the uploaded document
     filename          : original filename (used to detect .docx / .pdf)
-    anthropic_client  : optional anthropic.Anthropic instance; enables AI
-                        prose-stripping. Pass None to use regex heuristics.
+    anthropic_client  : optional anthropic.Anthropic instance.
+                        None  → Standard mode (regex only).
+                        set   → AI Assist or AI Only mode (see ai_primary).
+    ai_primary        : if True and anthropic_client is set, AI processes every
+                        footnote first (AI Only mode); regex is a safety net for
+                        footnotes AI cannot parse.
+                        If False and anthropic_client is set, regex runs first and
+                        AI handles only footnotes regex cannot parse (AI Assist mode).
     on_progress       : optional callable(done: int, total: int)
 
     Returns
@@ -548,8 +555,10 @@ def extract_citations(
     -----
     - is_id_cite=True rows represent id. citations resolved to a prior source.
       They contribute to Times Cited counts in the Unique Sources sheet.
-    - extraction_method: 'ai' | 'ai_fallback' | 'regex'
-      'ai_fallback' means AI returned nothing for that footnote and regex was used.
+    - extraction_method values:
+        'regex'              — regex extracted the citations
+        'ai'                 — AI extracted the citations
+        'ai_regex_fallback'  — AI Only mode; AI returned nothing so regex was used
     """
     _empty = pd.DataFrame(columns=[
         'footnote_num', 'raw_citation', 'citation', 'canonical_citation',
@@ -573,8 +582,10 @@ def extract_citations(
     citation_strings: dict[int, list[str]] = {}
     fn_methods: dict[int, str] = {}
 
-    if anthropic_client is not None:
-        BATCH = 30
+    BATCH = 30
+
+    if anthropic_client is not None and ai_primary:
+        # ---- AI Only mode: AI processes every footnote; regex as safety net ----
         for i in range(0, len(raw_footnotes), BATCH):
             batch = raw_footnotes[i:i + BATCH]
             ai_result = _ai_strip_prose(batch, anthropic_client)
@@ -583,16 +594,32 @@ def extract_citations(
                     citation_strings[fn_num] = ai_result[fn_num]
                     fn_methods[fn_num] = 'ai'
                 else:
+                    # AI returned nothing — fall back to regex and flag it
                     citation_strings[fn_num] = _regex_strip_prose(text)
-                    fn_methods[fn_num] = 'ai_fallback'
-            if on_progress:
-                on_progress(min(i + BATCH, len(raw_footnotes)), len(raw_footnotes))
+                    fn_methods[fn_num] = 'ai_regex_fallback'
     else:
+        # ---- Standard / AI Assist: regex runs first on every footnote ----
         for fn_num, text in raw_footnotes:
-            citation_strings[fn_num] = _regex_strip_prose(text)
+            result = _regex_strip_prose(text)
+            citation_strings[fn_num] = result
             fn_methods[fn_num] = 'regex'
-        if on_progress:
-            on_progress(len(raw_footnotes), len(raw_footnotes))
+
+        if anthropic_client is not None:
+            # AI Assist: send only the footnotes regex could not parse to Claude
+            ai_needed = [(fn_num, text) for fn_num, text in raw_footnotes
+                         if not citation_strings[fn_num]]
+            if ai_needed:
+                for i in range(0, len(ai_needed), BATCH):
+                    batch = ai_needed[i:i + BATCH]
+                    ai_result = _ai_strip_prose(batch, anthropic_client)
+                    for fn_num, text in batch:
+                        if fn_num in ai_result and ai_result[fn_num]:
+                            citation_strings[fn_num] = ai_result[fn_num]
+                            fn_methods[fn_num] = 'ai'
+                        # else: both regex and AI found nothing — stays empty
+
+    if on_progress:
+        on_progress(len(raw_footnotes), len(raw_footnotes))
 
     # ---- Steps 3-8: clean citations, track id./supra/infra references ------
     raw_lookup = {fn_num: text for fn_num, text in raw_footnotes}
@@ -688,9 +715,14 @@ def extract_citations(
                 fn_canonicals[fn_num].append(canonical)
                 reason = needs_review_reason(part)
 
-                # Flag when AI mode was active but regex had to be used for this footnote
-                if method == 'ai_fallback':
-                    fallback_note = 'AI returned no result — regex fallback applied; verify extraction'
+                # Flag footnotes where the non-primary extractor had to be used
+                if method == 'ai':
+                    # AI Assist: regex found nothing, Claude stepped in
+                    fallback_note = 'Regex found no citations — AI Assist used; verify extraction'
+                    reason = (fallback_note + '; ' + reason).rstrip('; ') if reason else fallback_note
+                elif method == 'ai_regex_fallback':
+                    # AI Only: Claude returned nothing, regex stepped in
+                    fallback_note = 'AI returned no result — regex safety net applied; verify extraction'
                     reason = (fallback_note + '; ' + reason).rstrip('; ') if reason else fallback_note
 
                 records.append({
