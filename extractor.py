@@ -252,17 +252,42 @@ def _looks_like_citation(text: str) -> bool:
     return False
 
 
+# Matches a citation boundary: a closing paren or digit, followed by ". Signal"
+# Used to split "Smith (2007). See also Doe (2008)" into two citations.
+_SIGNAL_SEP_RE = re.compile(
+    r'(?<=[)\d])\s*\.\s+'
+    r'(?=See,?\s*e\.g\.|See\s+also|But\s+[Ss]ee|See\s+generally'
+    r'|[Ss]ee\s+|Cf\.,?\s|Compare\s|E\.g\.,|generally\s)',
+    re.IGNORECASE,
+)
+
+
+def _split_footnote(text: str) -> list[str]:
+    """
+    Split a raw footnote into individual citation segments.
+
+    Handles two separator patterns:
+      1. Semicolons  (the primary delimiter in Bluebook style)
+      2. ". Signal"  (e.g. ". See also", ". But see", ". Cf.")
+         — only fires when the preceding character is ) or a digit,
+           so abbreviations like "U.S." and "F.3d" are not split.
+    """
+    parts = []
+    for chunk in text.split(';'):
+        parts.extend(_SIGNAL_SEP_RE.split(chunk))
+    return [p.strip() for p in parts if p.strip()]
+
+
 def _regex_strip_prose(text: str) -> list[str]:
     """
     Clean and split a footnote into individual citation strings.
 
-    Improvement over the original: cleaning (footnote-number stripping,
-    parenthetical removal, signal stripping) happens *before* the
-    citation-detection heuristic runs, so _looks_like_citation sees
-    clean text rather than signal-laden prose.
+    Splits on both semicolons and mid-footnote citation signals
+    (". See also", ". But see", etc.), then cleans each segment
+    before running the citation-detection heuristic.
     """
     text = strip_footnote_number(text)
-    parts = [p.strip() for p in text.split(';') if p.strip()]
+    parts = _split_footnote(text)
     results = []
     for part in parts:
         seg = clean_parentheticals(part)
