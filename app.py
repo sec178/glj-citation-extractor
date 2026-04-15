@@ -68,6 +68,12 @@ st.markdown(
 )
 st.divider()
 
+st.info(
+    '🔒 **Your document is never read by AI.** '
+    'All extraction is done locally using rule-based text parsing — '
+    'no file content is sent to any AI service or external server.'
+)
+
 uploaded = st.file_uploader(
     'Upload your article',
     type=['pdf', 'docx'],
