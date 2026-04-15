@@ -51,6 +51,10 @@ Two files only — no AI dependencies, no external API calls:
    | `see, e.g.` / `See, e.g.` / `See e.g.` | Comma is optional (`?,`) |
    | `see generally` / `See generally` | |
    | `but see` / `But see` | |
+   | `Accord` | Word boundary prevents partial matches |
+   | `Cf.` | Word boundary, escaped period |
+   | `Contra` | Word boundary |
+   | `but cf.` / `But cf.` | Case-insensitive |
 
 3. **Filtering** — Fragments with only one word are dropped.
 
