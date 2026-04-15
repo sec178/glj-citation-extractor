@@ -113,11 +113,13 @@ def extract_footnotes_pdf(file_bytes: bytes) -> list[tuple[int, str]]:
 _SPLIT_RE = re.compile(
     r'\s*'
     r'(;'
-    r'|\b[Ii]d\.'              # id. / Id. — word boundary guards against "Madrid."
-    r'|[Ss]ee\s+[Aa]lso'      # see also / See also
-    r'|\([Qq]uoting'           # (quoting / (Quoting
-    r'|[Ss]ee\s+[Ss]upra'     # see supra / See supra
-    r'|[Ss]ee\s+[Ii]nfra'     # see infra / See infra
+    r'|\b[Ii]d\.'                  # id. / Id. — word boundary guards against "Madrid."
+    r'|[Ss]ee\s+[Aa]lso'           # see also / See also
+    r'|\([Qq]uoting'               # (quoting / (Quoting
+    r'|[Ss]ee\s+[Ss]upra'         # see supra / See supra
+    r'|[Ss]ee\s+[Ii]nfra'         # see infra / See infra
+    r'|[Ss]ee,?\s+e\.g\.'         # see, e.g. / See, e.g. / See e.g.
+    r'|[Ss]ee\s+[Gg]enerally'     # see generally / See generally
     r')\s*'
 )
 
