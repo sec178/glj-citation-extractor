@@ -4,7 +4,7 @@ GLJ Citation Extractor — core extraction logic.
 Pipeline:
   1. Extract footnotes from a .docx or .pdf file
   2. Split each footnote on: semicolons, "id.", "see also", "(quoting",
-     "see supra", and "see infra"
+     "see supra", "see infra", "Accord", "Cf.", "Contra", and "But cf."
   3. Return a flat list of citation strings for Excel export
 """
 
@@ -121,6 +121,10 @@ _SPLIT_RE = re.compile(
     r'|[Ss]ee,?\s+e\.g\.'         # see, e.g. / See, e.g. / See e.g.
     r'|[Ss]ee\s+[Gg]enerally'     # see generally / See generally
     r'|[Bb]ut\s+[Ss]ee'           # but see / But see
+    r'|\bAccord\b'                 # Accord
+    r'|\bCf\.'                     # Cf.
+    r'|\bContra\b'                 # Contra
+    r'|[Bb]ut\s+[Cc]f\.'          # but cf. / But cf.
     r')\s*'
 )
 
