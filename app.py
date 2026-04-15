@@ -31,7 +31,7 @@ with st.sidebar:
         '   - A `see also` signal\n'
         '   - A `(quoting` parenthetical\n'
         '   - A `see supra` or `see infra` cross-reference\n'
-        '   - A `see, e.g.` or `see generally` signal\n'
+        '   - A `see, e.g.`, `see generally`, or `but see` signal\n'
         '4. **Download** the results as an Excel file — one citation per row'
     )
     st.divider()

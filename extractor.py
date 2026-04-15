@@ -120,6 +120,7 @@ _SPLIT_RE = re.compile(
     r'|[Ss]ee\s+[Ii]nfra'         # see infra / See infra
     r'|[Ss]ee,?\s+e\.g\.'         # see, e.g. / See, e.g. / See e.g.
     r'|[Ss]ee\s+[Gg]enerally'     # see generally / See generally
+    r'|[Bb]ut\s+[Ss]ee'           # but see / But see
     r')\s*'
 )
 
